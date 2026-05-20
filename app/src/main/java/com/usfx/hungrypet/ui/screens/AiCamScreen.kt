@@ -27,23 +27,24 @@ import com.usfx.hungrypet.viewmodel.MainViewModel
 
 @Composable
 fun AiCamScreen(viewModel: MainViewModel) {
-    // Estados que provienen de Firebase (ESP32)
     val cameraFrame by viewModel.cameraFrame.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
 
-    // Estados para la prueba local del teléfono (ML Kit)
+    // NUEVOS ESTADOS ENLAZADOS AL VIEWMODEL PARA EL ESP32
+    val isEsp32AiActive by viewModel.isEsp32AiActive.collectAsState()
+    val esp32DetectionResult by viewModel.esp32DetectionResult.collectAsState()
+
+    // Estados para la prueba local del teléfono
     var isPhoneCameraActive by remember { mutableStateOf(false) }
     var currentAiDetection by remember { mutableStateOf("Buscando mascotas...") }
 
     val context = LocalContext.current
-
-    // Lanzador de permisos de Android: Pide permiso al usuario la primera vez que abre la cámara
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
             isPhoneCameraActive = true
-            if (isStreaming) viewModel.toggleCameraStream() // Apaga el ESP32 si abres el teléfono para evitar choques
+            if (isStreaming) viewModel.toggleCameraStream()
         }
     }
 
@@ -54,8 +55,7 @@ fun AiCamScreen(viewModel: MainViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
 
-        // --- VISOR PRINCIPAL (Caja negra) ---
-        // Aquí decidimos dinámicamente qué mostrar basándonos en los booleanos de estado
+        // --- VISOR DE LA CÁMARA (Alterna entre ESP32 y Teléfono) ---
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -65,12 +65,9 @@ fun AiCamScreen(viewModel: MainViewModel) {
             contentAlignment = Alignment.Center
         ) {
             when {
-                // 1. Mostrar IA Local
                 isPhoneCameraActive -> {
-                    PhoneCameraView(
-                        onDetectionUpdate = { result -> currentAiDetection = result }
-                    )
-                    // Overlay de texto flotante
+                    PhoneCameraView(onDetectionUpdate = { result -> currentAiDetection = result })
+
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -78,15 +75,9 @@ fun AiCamScreen(viewModel: MainViewModel) {
                             .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
                             .padding(horizontal = 16.dp, vertical = 8.dp)
                     ) {
-                        Text(
-                            text = currentAiDetection,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center
-                        )
+                        Text(text = currentAiDetection, color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                     }
                 }
-                // 2. Mostrar Cámara del ESP32
                 isStreaming -> {
                     if (cameraFrame != null) {
                         Image(
@@ -95,18 +86,30 @@ fun AiCamScreen(viewModel: MainViewModel) {
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop
                         )
+
+                        // TEXTO FLOTANTE CON EL RESULTADO DE LA IA DEL ESP32
+                        if (isEsp32AiActive) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(16.dp)
+                                    .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f), RoundedCornerShape(12.dp))
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = esp32DetectionResult,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
                     } else {
                         CircularProgressIndicator()
                     }
                 }
-                // 3. Estado en reposo (Icono por defecto)
                 else -> {
-                    Icon(
-                        Icons.Rounded.CameraAlt,
-                        contentDescription = null,
-                        modifier = Modifier.size(80.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                    )
+                    Icon(Icons.Rounded.CameraAlt, contentDescription = null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
                 }
             }
         }
@@ -118,6 +121,7 @@ fun AiCamScreen(viewModel: MainViewModel) {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // Botón 1: Ver Cámara ESP32
             FilledTonalButton(
                 onClick = {
                     if (isPhoneCameraActive) isPhoneCameraActive = false
@@ -134,15 +138,19 @@ fun AiCamScreen(viewModel: MainViewModel) {
                 Text(if (isStreaming) "Detener ESP32" else "Cámara ESP32", textAlign = TextAlign.Center)
             }
 
+            // Botón 2: Activar/Desactivar IA en el ESP32 (DINÁMICO)
             Button(
-                onClick = { viewModel.handleAutoDetection("Perro") },
+                onClick = { viewModel.toggleEsp32Ai() },
                 modifier = Modifier.weight(1f).height(60.dp),
                 shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                enabled = isStreaming, // Solo se puede activar si la cámara está encendida
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isEsp32AiActive) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
+                )
             ) {
-                Icon(Icons.Rounded.SmartToy, contentDescription = null)
+                Icon(if (isEsp32AiActive) Icons.Rounded.SmartToy else Icons.Rounded.Circle, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Activar IA (ESP32)", textAlign = TextAlign.Center)
+                Text(if (isEsp32AiActive) "IA Activa" else "Activar IA (ESP32)", textAlign = TextAlign.Center)
             }
         }
 
@@ -150,7 +158,7 @@ fun AiCamScreen(viewModel: MainViewModel) {
         HorizontalDivider(modifier = Modifier.padding(horizontal = 32.dp))
         Spacer(modifier = Modifier.height(32.dp))
 
-        // --- BOTÓN 3: ENTORNO DE PRUEBAS ---
+        // --- BOTÓN 3: ENTORNO DE PRUEBAS (CÁMARA DEL TELÉFONO) ---
         Text("Entorno de Pruebas", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -159,12 +167,10 @@ fun AiCamScreen(viewModel: MainViewModel) {
                 if (isPhoneCameraActive) {
                     isPhoneCameraActive = false
                 } else {
-                    // Verifica permisos de cámara antes de abrir
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                         if (isStreaming) viewModel.toggleCameraStream()
                         isPhoneCameraActive = true
                     } else {
-                        // Si no tiene permisos, levanta el cuadro de diálogo de Android pidiéndolo
                         permissionLauncher.launch(Manifest.permission.CAMERA)
                     }
                 }
