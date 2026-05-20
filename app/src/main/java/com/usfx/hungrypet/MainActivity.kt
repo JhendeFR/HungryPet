@@ -22,6 +22,7 @@ import com.usfx.hungrypet.ui.screens.AiCamScreen
 import com.usfx.hungrypet.ui.screens.HistoryScreen
 import com.usfx.hungrypet.ui.screens.HomeScreen
 import com.usfx.hungrypet.ui.screens.ScheduleScreen
+import com.usfx.hungrypet.ui.screens.LabsScreen
 import com.usfx.hungrypet.ui.theme.HungryPetTheme
 import com.usfx.hungrypet.viewmodel.MainViewModel
 import kotlinx.coroutines.launch
@@ -138,6 +139,7 @@ fun HungryPetApp(viewModel: MainViewModel) {
                 composable("schedule") { ScheduleScreen() }
                 composable("history") { HistoryScreen(viewModel) }
                 composable("ai_cam") { AiCamScreen(viewModel) }
+                composable("labs") { LabsScreen(viewModel) }
             }
         }
     }
