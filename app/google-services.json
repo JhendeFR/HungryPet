@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "351701744332",
+    "firebase_url": "https://esp32-b8c7c-default-rtdb.firebaseio.com",
+    "project_id": "esp32-b8c7c",
+    "storage_bucket": "esp32-b8c7c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:351701744332:android:f9416a42fca429c15c2069",
+        "android_client_info": {
+          "package_name": "com.usfx.hungrypet"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCDrD8r1DYWVMiwpbJE75APsaCp4DJVKIg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
