@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -35,29 +36,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val logs: StateFlow<List<FeedingLog>> = dao.getAllLogs()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // --- ESTADOS DE LA CÁMARA ESP32 ---
+    // --- ESTADOS DE LA PANTALLA DE INICIO (HOME) ---
+    private val _homeDispenseAmount = MutableStateFlow(50)
+    val homeDispenseAmount: StateFlow<Int> = _homeDispenseAmount.asStateFlow()
+
+    // Resumen diario calculado reactivamente filtrando los logs por la fecha de hoy
+    val dailyStats: StateFlow<Map<String, Int>> = logs.combine(_homeDispenseAmount) { list, _ ->
+        val todayStr = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date())
+        val todayLogs = list.filter { it.fechaHora.startsWith(todayStr) }
+        mapOf(
+            "Manual" to todayLogs.filter { it.tipo == "Manual" }.sumOf { it.cantidad },
+            "Programado" to todayLogs.filter { it.tipo == "Programado" }.sumOf { it.cantidad },
+            "Automático" to todayLogs.filter { it.tipo == "Automático" }.sumOf { it.cantidad }
+        )
+    }.stateIn(viewModelScope, SharingStarted.Lazily, mapOf("Manual" to 0, "Programado" to 0, "Automático" to 0))
+
+    // --- ESTADOS DEL HARDWARE ESP32 & IA ---
     private val _cameraFrame = MutableStateFlow<Bitmap?>(null)
     val cameraFrame: StateFlow<Bitmap?> = _cameraFrame.asStateFlow()
 
     private val _isStreaming = MutableStateFlow(false)
     val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
 
-    // --- NUEVOS ESTADOS PARA LA IA DEL ESP32 ---
     private val _isEsp32AiActive = MutableStateFlow(false)
     val isEsp32AiActive: StateFlow<Boolean> = _isEsp32AiActive.asStateFlow()
 
-    private val _esp32DetectionResult = MutableStateFlow("IA en reposo")
+    private val _esp32DetectionResult = MutableStateFlow("Esperando activación de proximidad...")
     val esp32DetectionResult: StateFlow<String> = _esp32DetectionResult.asStateFlow()
 
-    // Inicializamos ML Kit aquí para que analice los Bitmaps provenientes de Firebase
-    private val imageLabeler = ImageLabeling.getClient(
-        ImageLabelerOptions.Builder()
-            .setConfidenceThreshold(0.60f)
-            .build()
-    )
+    private val _isEsp32FlashOn = MutableStateFlow(false)
+    val isEsp32FlashOn: StateFlow<Boolean> = _isEsp32FlashOn.asStateFlow()
 
-    // Variable de control para evitar múltiples raciones por una misma detección continua
+    private val _aiDispenseAmount = MutableStateFlow(40)
+    val aiDispenseAmount: StateFlow<Int> = _aiDispenseAmount.asStateFlow()
+
+    private val imageLabeler = ImageLabeling.getClient(
+        ImageLabelerOptions.Builder().setConfidenceThreshold(0.60f).build()
+    )
     private var lastFeededTime: Long = 0
+
+    fun setHomeDispenseAmount(amount: Int) { _homeDispenseAmount.value = amount }
+    fun setAiDispenseAmount(amount: Int) { _aiDispenseAmount.value = amount }
+
+    fun toggleEsp32Flash() {
+        _isEsp32FlashOn.value = !_isEsp32FlashOn.value
+        // Aquí se llamaría a Retrofit para encender/apagar físicamente el pin GPIO4 del ESP32
+        // RetrofitClient.apiService.toggleFlash(_isEsp32FlashOn.value)
+    }
 
     fun toggleCameraStream() {
         if (_isStreaming.value) {
@@ -72,8 +97,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (_isStreaming.value) {
                         val bitmap = decodeBase64ToBitmap(base64String)
                         _cameraFrame.value = bitmap
-
-                        // SI LA IA DEL ESP32 ESTÁ ACTIVA Y LLEGA UNA IMAGEN, LA ANALIZAMOS
                         if (bitmap != null && _isEsp32AiActive.value) {
                             analyzeEsp32Frame(bitmap)
                         }
@@ -85,21 +108,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleEsp32Ai() {
         _isEsp32AiActive.value = !_isEsp32AiActive.value
-        if (!_isEsp32AiActive.value) {
-            _esp32DetectionResult.value = "IA Desactivada"
+        _esp32DetectionResult.value = if (_isEsp32AiActive.value) {
+            "Escuchando ultrasonido HC-SR04..."
         } else {
-            _esp32DetectionResult.value = "Analizando stream del ESP32..."
-            // Si ya hay una imagen en pantalla, la procesamos inmediatamente
-            _cameraFrame.value?.let { analyzeEsp32Frame(it) }
+            "IA Desactivada"
         }
     }
 
     private fun analyzeEsp32Frame(bitmap: Bitmap) {
         val image = InputImage.fromBitmap(bitmap, 0)
-
         imageLabeler.process(image)
             .addOnSuccessListener { labels ->
-                var detectedText = "Buscando mascotas..."
+                var detectedText = "Monitoreando entorno..."
                 var animalDetected = "Otro"
 
                 for (label in labels) {
@@ -114,49 +134,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         detectedText = "¡GATO DETECTADO! ($confidence%) 🐱"
                         animalDetected = "Gato"
                         break
-                    } else if (text.contains("pet") || text.contains("animal")) {
-                        detectedText = "Mascota detectada ($confidence%) 🐾"
-                        animalDetected = "Mascota"
                     }
                 }
 
                 _esp32DetectionResult.value = detectedText
 
-                // LÓGICA DE AUTOMATIZACIÓN REAL: Dispensar si se confirma Perro o Gato
-                if (animalDetected == "Perro" || animalDetected == "Gato") {
+                if ((animalDetected == "Perro" || animalDetected == "Gato")) {
                     val currentTime = System.currentTimeMillis()
-                    // Ventana de tiempo (1 minuto) para evitar que dispense sin parar con el mismo frame
-                    if (currentTime - lastFeededTime > 60000) {
+                    if (currentTime - lastFeededTime > 45000) { // Ventana de resguardo de 45 seg
                         lastFeededTime = currentTime
                         executeFeederAutomation(animalDetected)
                     }
                 }
             }
-            .addOnFailureListener { e ->
-                Log.e("MLKit_ESP32", "Error al procesar frame de Firebase", e)
-            }
+            .addOnFailureListener { Log.e("MLKit_ESP32", "Inferencia fallida", it) }
     }
 
     private fun executeFeederAutomation(mascota: String) {
-        val amount = if (mascota == "Perro") 50 else 30
+        val portion = _aiDispenseAmount.value
         viewModelScope.launch {
-            try {
-                // Aquí se conectará con tus servos reales a través de Retrofit
-                // RetrofitClient.apiService.dispenseFood(amount)
-
-                saveLog("Automático", mascota, amount)
-                sendNotification("Alimentador Automático", "Se detectó un $mascota. Dispensados ${amount}g.")
-            } catch (e: Exception) {
-                Log.e("Retrofit", "Error al enviar comando al dispensador", e)
-            }
+            // RetrofitClient.apiService.dispenseFood(portion)
+            saveLog("Automático", mascota, portion)
+            sendNotification("IA Automática", "Se identificó un $mascota. Dispensando ${portion}g.")
         }
     }
 
-    fun dispenseFoodManual(amount: Int) {
+    fun dispenseFoodManual(amount: Int, onComplete: () -> Unit) {
         viewModelScope.launch {
             // RetrofitClient.apiService.dispenseFood(amount)
             saveLog("Manual", "N/A", amount)
-            sendNotification("Alimentación Manual", "Se han dispensado ${amount}g.")
+            sendNotification("Alimentación Manual", "Dispensando ración de ${amount}g.")
+            onComplete()
         }
     }
 
@@ -170,29 +178,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return try {
             val decodedBytes = Base64.decode(base64Str, Base64.DEFAULT)
             BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
+        } catch (e: Exception) { null }
     }
 
     private fun sendNotification(title: String, message: String) {
         val context = getApplication<Application>().applicationContext
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channelId = "hungrypet_channel"
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(channelId, "HungryPet Notificaciones", NotificationManager.IMPORTANCE_DEFAULT)
+            val channel = NotificationChannel(channelId, "HungryPet System", NotificationManager.IMPORTANCE_DEFAULT)
             notificationManager.createNotificationChannel(channel)
         }
-
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
             .setContentText(message)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
-
         notificationManager.notify(System.currentTimeMillis().toInt(), notification)
     }
 }

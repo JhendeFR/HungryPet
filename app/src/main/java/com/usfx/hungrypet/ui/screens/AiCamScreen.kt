@@ -1,9 +1,5 @@
 package com.usfx.hungrypet.ui.screens
 
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -17,173 +13,114 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import com.usfx.hungrypet.ui.components.PhoneCameraView
 import com.usfx.hungrypet.viewmodel.MainViewModel
 
 @Composable
 fun AiCamScreen(viewModel: MainViewModel) {
     val cameraFrame by viewModel.cameraFrame.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
-
-    // NUEVOS ESTADOS ENLAZADOS AL VIEWMODEL PARA EL ESP32
     val isEsp32AiActive by viewModel.isEsp32AiActive.collectAsState()
     val esp32DetectionResult by viewModel.esp32DetectionResult.collectAsState()
-
-    // Estados para la prueba local del teléfono
-    var isPhoneCameraActive by remember { mutableStateOf(false) }
-    var currentAiDetection by remember { mutableStateOf("Buscando mascotas...") }
-
-    val context = LocalContext.current
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            isPhoneCameraActive = true
-            if (isStreaming) viewModel.toggleCameraStream()
-        }
-    }
+    val isFlashOn by viewModel.isEsp32FlashOn.collectAsState()
+    val aiAmount by viewModel.aiDispenseAmount.collectAsState()
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
+        modifier = Modifier.fillMaxSize().padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-
-        // --- VISOR DE LA CÁMARA (Alterna entre ESP32 y Teléfono) ---
+        // Visor de Cámara de Red Remota
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(300.dp)
+                .height(260.dp)
                 .clip(RoundedCornerShape(24.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
         ) {
-            when {
-                isPhoneCameraActive -> {
-                    PhoneCameraView(onDetectionUpdate = { result -> currentAiDetection = result })
-
+            if (isStreaming) {
+                if (cameraFrame != null) {
+                    Image(
+                        bitmap = cameraFrame!!.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
                     Box(
                         modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(16.dp)
-                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .align(Alignment.BottomCenter)
+                            .padding(12.dp)
+                            .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.9f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
                     ) {
-                        Text(text = currentAiDetection, color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                        Text(text = esp32DetectionResult, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
                     }
+                } else {
+                    CircularProgressIndicator()
                 }
-                isStreaming -> {
-                    if (cameraFrame != null) {
-                        Image(
-                            bitmap = cameraFrame!!.asImageBitmap(),
-                            contentDescription = "Stream del ESP32",
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
-
-                        // TEXTO FLOTANTE CON EL RESULTADO DE LA IA DEL ESP32
-                        if (isEsp32AiActive) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.BottomCenter)
-                                    .padding(16.dp)
-                                    .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f), RoundedCornerShape(12.dp))
-                                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                            ) {
-                                Text(
-                                    text = esp32DetectionResult,
-                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                    fontWeight = FontWeight.Bold,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-                    } else {
-                        CircularProgressIndicator()
-                    }
-                }
-                else -> {
-                    Icon(Icons.Rounded.CameraAlt, contentDescription = null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-                }
+            } else {
+                Icon(Icons.Rounded.Router, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        // --- PANEL DE HARDWARE AVANZADO ---
+        Card(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.FlashlightOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Iluminación de Apoyo (Flash)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    Spacer(modifier = Modifier.weight(1f))
+                    Switch(checked = isFlashOn, onCheckedChange = { viewModel.toggleEsp32Flash() })
+                }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.SettingsInputAntenna, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Ración Automática IA: $aiAmount g", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                }
+                Slider(
+                    value = aiAmount.toFloat(),
+                    onValueChange = { viewModel.setAiDispenseAmount(it.toInt()) },
+                    valueRange = 20f..100f,
+                    steps = 7
+                )
+            }
+        }
 
-        // --- BOTONES PARA EL ESP32 (SISTEMA REAL) ---
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // Botón 1: Ver Cámara ESP32
+        Spacer(modifier = Modifier.weight(1f))
+
+        // --- DOS BOTONES DE CONTROL DE SISTEMA ---
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             FilledTonalButton(
-                onClick = {
-                    if (isPhoneCameraActive) isPhoneCameraActive = false
-                    viewModel.toggleCameraStream()
-                },
-                modifier = Modifier.weight(1f).height(60.dp),
+                onClick = { viewModel.toggleCameraStream() },
+                modifier = Modifier.weight(1f).height(64.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.filledTonalButtonColors(
                     containerColor = if (isStreaming) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer
                 )
             ) {
                 Icon(if (isStreaming) Icons.Rounded.VideocamOff else Icons.Rounded.Videocam, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(if (isStreaming) "Detener ESP32" else "Cámara ESP32", textAlign = TextAlign.Center)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("ESP32 Live")
             }
 
-            // Botón 2: Activar/Desactivar IA en el ESP32 (DINÁMICO)
             Button(
                 onClick = { viewModel.toggleEsp32Ai() },
-                modifier = Modifier.weight(1f).height(60.dp),
+                modifier = Modifier.weight(1f).height(64.dp),
                 shape = RoundedCornerShape(16.dp),
-                enabled = isStreaming, // Solo se puede activar si la cámara está encendida
+                enabled = isStreaming,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (isEsp32AiActive) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
                 )
             ) {
-                Icon(if (isEsp32AiActive) Icons.Rounded.SmartToy else Icons.Rounded.Circle, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(if (isEsp32AiActive) "IA Activa" else "Activar IA (ESP32)", textAlign = TextAlign.Center)
+                Icon(Icons.Rounded.SmartToy, contentDescription = null)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(if (isEsp32AiActive) "IA Activa" else "Activar IA")
             }
-        }
-
-        Spacer(modifier = Modifier.height(32.dp))
-        HorizontalDivider(modifier = Modifier.padding(horizontal = 32.dp))
-        Spacer(modifier = Modifier.height(32.dp))
-
-        // --- BOTÓN 3: ENTORNO DE PRUEBAS (CÁMARA DEL TELÉFONO) ---
-        Text("Entorno de Pruebas", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(modifier = Modifier.height(8.dp))
-
-        OutlinedButton(
-            onClick = {
-                if (isPhoneCameraActive) {
-                    isPhoneCameraActive = false
-                } else {
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        if (isStreaming) viewModel.toggleCameraStream()
-                        isPhoneCameraActive = true
-                    } else {
-                        permissionLauncher.launch(Manifest.permission.CAMERA)
-                    }
-                }
-            },
-            modifier = Modifier.fillMaxWidth().height(60.dp),
-            shape = RoundedCornerShape(20.dp),
-            colors = ButtonDefaults.outlinedButtonColors(
-                contentColor = if (isPhoneCameraActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-            )
-        ) {
-            Icon(if (isPhoneCameraActive) Icons.Rounded.Stop else Icons.Rounded.Science, contentDescription = null, modifier = Modifier.size(24.dp))
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(if (isPhoneCameraActive) "Detener Prueba Local" else "Probar IA (Cámara Teléfono)")
         }
     }
 }

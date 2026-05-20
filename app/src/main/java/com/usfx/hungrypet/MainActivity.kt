@@ -99,9 +99,19 @@ fun HungryPetApp(viewModel: MainViewModel) {
                 )
                 NavigationDrawerItem(
                     icon = { Icon(Icons.Rounded.SmartToy, contentDescription = null) },
-                    label = { Text("Detección IA (Cámara)") },
+                    label = { Text("Detección IA") },
                     selected = false,
                     onClick = { navController.navigate("ai_cam"); scope.launch { drawerState.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                )
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Rounded.Science, contentDescription = null) },
+                    label = { Text("Labs") },
+                    selected = false,
+                    onClick = {
+                        navController.navigate("labs")
+                        scope.launch { drawerState.close() }
+                    },
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                 )
             }
