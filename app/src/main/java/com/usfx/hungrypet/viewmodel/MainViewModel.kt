@@ -28,6 +28,9 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import com.google.firebase.database.FirebaseDatabase
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val dao = AppDatabase.getDatabase(application).feedingLogDao()
@@ -61,7 +64,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isEsp32AiActive = MutableStateFlow(false)
     val isEsp32AiActive: StateFlow<Boolean> = _isEsp32AiActive.asStateFlow()
 
-    private val _esp32DetectionResult = MutableStateFlow("Esperando activación de proximidad...")
+    private val _esp32DetectionResult = MutableStateFlow("Esperando cuadros...")
     val esp32DetectionResult: StateFlow<String> = _esp32DetectionResult.asStateFlow()
 
     private val _isEsp32FlashOn = MutableStateFlow(false)
@@ -70,10 +73,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _aiDispenseAmount = MutableStateFlow(40)
     val aiDispenseAmount: StateFlow<Int> = _aiDispenseAmount.asStateFlow()
 
+    private var firebaseJob: Job? = null
+    private var lastFeededTime: Long = 0
+
+    // Motor de ML Kit
     private val imageLabeler = ImageLabeling.getClient(
         ImageLabelerOptions.Builder().setConfidenceThreshold(0.60f).build()
     )
-    private var lastFeededTime: Long = 0
 
     fun setHomeDispenseAmount(amount: Int) { _homeDispenseAmount.value = amount }
     fun setAiDispenseAmount(amount: Int) { _aiDispenseAmount.value = amount }
@@ -84,38 +90,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // RetrofitClient.apiService.toggleFlash(_isEsp32FlashOn.value)
     }
 
+    // --- LÓGICA DE CONTROL FIREBASE/IA ---
+
     fun toggleCameraStream() {
-        if (_isStreaming.value) {
-            _isStreaming.value = false
-            _isEsp32AiActive.value = false
-            _cameraFrame.value = null
-            _esp32DetectionResult.value = "IA en reposo"
-        } else {
-            _isStreaming.value = true
-            viewModelScope.launch {
-                firebaseRepository.getCameraStream().collect { base64String ->
-                    if (_isStreaming.value) {
-                        val bitmap = decodeBase64ToBitmap(base64String)
-                        _cameraFrame.value = bitmap
-                        if (bitmap != null && _isEsp32AiActive.value) {
-                            analyzeEsp32Frame(bitmap)
-                        }
-                    }
-                }
-            }
-        }
+        _isStreaming.value = !_isStreaming.value
+        manageFirebaseListener()
     }
 
     fun toggleEsp32Ai() {
         _isEsp32AiActive.value = !_isEsp32AiActive.value
-        _esp32DetectionResult.value = if (_isEsp32AiActive.value) {
-            "Escuchando ultrasonido HC-SR04..."
-        } else {
-            "IA Desactivada"
+        manageFirebaseListener()
+    }
+
+    // Gestiona si el teléfono debe descargar imágenes de Firebase o no
+    private fun manageFirebaseListener() {
+        val needsConnection = _isStreaming.value || _isEsp32AiActive.value
+
+        if (needsConnection && firebaseJob == null) {
+            firebaseJob = viewModelScope.launch {
+                firebaseRepository.getCameraStream().collect { base64String ->
+                    val bitmap = decodeBase64ToBitmap(base64String)
+
+                    if (bitmap != null) {
+                        // Si el Live está activo, actualizamos la imagen en pantalla
+                        if (_isStreaming.value) {
+                            _cameraFrame.value = bitmap
+                        }
+
+                        // Si cualquiera está activo, inferimos la imagen.
+                        // El booleano determina si se debe automatizar el dispensador o no.
+                        analyzeEsp32Frame(bitmap, autoDispense = _isEsp32AiActive.value)
+                    }
+                }
+            }
+        } else if (!needsConnection && firebaseJob != null) {
+            // Apagamos la conexión para ahorrar batería y datos
+            firebaseJob?.cancel()
+            firebaseJob = null
+            _cameraFrame.value = null
+            _esp32DetectionResult.value = "Sistema en reposo"
         }
     }
 
-    private fun analyzeEsp32Frame(bitmap: Bitmap) {
+    private fun analyzeEsp32Frame(bitmap: Bitmap, autoDispense: Boolean) {
         val image = InputImage.fromBitmap(bitmap, 0)
         imageLabeler.process(image)
             .addOnSuccessListener { labels ->
@@ -139,15 +156,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 _esp32DetectionResult.value = detectedText
 
-                if ((animalDetected == "Perro" || animalDetected == "Gato")) {
+                // Solo dispensamos si la función IA está activa
+                if (autoDispense && (animalDetected == "Perro" || animalDetected == "Gato")) {
                     val currentTime = System.currentTimeMillis()
-                    if (currentTime - lastFeededTime > 45000) { // Ventana de resguardo de 45 seg
+                    // Ventana de 1 minuto para evitar que se vacíe el dispensador
+                    if (currentTime - lastFeededTime > 60000) { // Ventana de 1 min
                         lastFeededTime = currentTime
                         executeFeederAutomation(animalDetected)
                     }
                 }
             }
             .addOnFailureListener { Log.e("MLKit_ESP32", "Inferencia fallida", it) }
+    }
+
+    // --- LÓGICA DE BLUETOOTH (MOCK PARA LABS) ---
+
+    fun sendBleCredentials(ssid: String, pass: String, mode: Int, onResult: (String) -> Unit) {
+        // El ESP32 espera este formato exacto separado por punto y coma: "MiWifi;12345;1"
+        // Si no hay wifi, se envía: ";;1" o ";;0"
+        val payload = "${ssid.trim()};${pass.trim()};$mode"
+
+        viewModelScope.launch {
+            // Aquí llamarías a tu BluetoothGatt.writeCharacteristic() pasándole payload.toByteArray()
+            onResult("Conectando BLE...")
+            delay(1500) // Simulación de tiempo de conexión
+            onResult("Trama enviada al ESP32: [$payload]")
+        }
     }
 
     private fun executeFeederAutomation(mascota: String) {
@@ -161,9 +195,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dispenseFoodManual(amount: Int, onComplete: () -> Unit) {
         viewModelScope.launch {
-            // RetrofitClient.apiService.dispenseFood(amount)
+            // 1. Obtenemos la referencia al nodo exacto que tu ESP32 está escuchando
+            val databaseRef = com.google.firebase.database.FirebaseDatabase.getInstance().getReference("dispensador/activar")
+
+            // 2. Cambiamos el valor a 1 para activar el mecanismo físico
+            databaseRef.setValue(1)
+                .addOnSuccessListener {
+                    println("HungryPetLog: Comando enviado a Firebase con éxito.")
+                }
+                .addOnFailureListener { exception ->
+                    println("HungryPetLog: Error al enviar comando: ${exception.message}")
+                }
+
+            // 3. Guardamos la ración en la base de datos local (RoomDB)
             saveLog("Manual", "N/A", amount)
-            sendNotification("Alimentación Manual", "Dispensando ración de ${amount}g.")
+
+            // 4. Disparamos la notificación push en el teléfono
+            sendNotification("Alimentación Manual", "Se han dispensado ${amount}g.")
+
+            // 5. Avisamos a la interfaz de usuario (HomeScreen) que ya terminamos para que quite el cartel de "Dispensando"
             onComplete()
         }
     }

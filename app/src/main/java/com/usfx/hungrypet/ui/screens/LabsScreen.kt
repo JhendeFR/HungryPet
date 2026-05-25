@@ -24,10 +24,11 @@ fun LabsScreen(viewModel: MainViewModel) {
     var isLocalIaTesting by remember { mutableStateOf(false) }
     var localDetectionText by remember { mutableStateOf("Esperando cuadro...") }
 
-    // Campos de Aprovisionamiento BLE
+    // Campos BLE
     var wifiSsid by remember { mutableStateOf("") }
     var wifiPassword by remember { mutableStateOf("") }
-    var operationMode by remember { mutableIntStateOf(0) } // 0 = Local (Websockets), 1 = Red (Firebase)
+    var operationMode by remember { mutableIntStateOf(1) } // 0 = Local, 1 = Firebase
+    var bleFeedback by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
@@ -35,19 +36,19 @@ fun LabsScreen(viewModel: MainViewModel) {
     ) {
         Text("Laboratorio de Pruebas (Labs)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
-        // PANEL 1: CONFIGURACIÓN BLUETOOTH (BLE PROVISIONING)
+        // --- PANEL 1: CONFIGURACIÓN BLUETOOTH ---
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.Bluetooth, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Sincronización BLE del Dispensador", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    Text("Sincronización BLE del Hardware", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
                 }
 
                 OutlinedTextField(
                     value = wifiSsid,
                     onValueChange = { wifiSsid = it },
-                    label = { Text("Nombre de Red Wi-Fi") },
+                    label = { Text("Red Wi-Fi (Opcional)") },
                     leadingIcon = { Icon(Icons.Rounded.Wifi, contentDescription = null) },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -55,38 +56,46 @@ fun LabsScreen(viewModel: MainViewModel) {
                 OutlinedTextField(
                     value = wifiPassword,
                     onValueChange = { wifiPassword = it },
-                    label = { Text("Contraseña") },
+                    label = { Text("Contraseña (Opcional)") },
                     leadingIcon = { Icon(Icons.Rounded.Lock, contentDescription = null) },
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Text("Modo de Operación del Hardware:", style = MaterialTheme.typography.labelMedium)
+                Text("Modo de Operación (Obligatorio):", style = MaterialTheme.typography.labelMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     FilterChip(
                         selected = operationMode == 0,
                         onClick = { operationMode = 0 },
-                        label = { Text("Wifi Local (P2P)") }
+                        label = { Text("Wifi Local") }
                     )
                     FilterChip(
                         selected = operationMode == 1,
                         onClick = { operationMode = 1 },
-                        label = { Text("Red Nube (Firebase)") }
+                        label = { Text("Firebase (Nube)") }
                     )
                 }
 
                 Button(
-                    onClick = { /* Invocar BluetoothGatt para transmitir tramas de bytes */ },
+                    onClick = {
+                        viewModel.sendBleCredentials(wifiSsid, wifiPassword, operationMode) { feedback ->
+                            bleFeedback = feedback
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
                 ) {
                     Icon(Icons.Rounded.BluetoothConnected, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Enviar Credenciales por BLE")
+                    Text("Sincronizar Dispositivo")
+                }
+
+                if (bleFeedback.isNotEmpty()) {
+                    Text(bleFeedback, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
 
-        // PANEL 2: COMPONENTE DE DEPURACIÓN DE IA LOCAL
+        // --- PANEL 2: COMPONENTE DE DEPURACIÓN DE IA LOCAL ---
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
