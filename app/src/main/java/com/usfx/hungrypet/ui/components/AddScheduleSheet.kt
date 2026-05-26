@@ -2,7 +2,6 @@ package com.usfx.hungrypet.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccessTime
 import androidx.compose.material.icons.rounded.Scale
@@ -11,7 +10,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -23,17 +21,16 @@ fun AddScheduleSheet(
     onDismiss: () -> Unit,
     onConfirm: (time: String, amount: Int) -> Unit
 ) {
-    // Estado para la hoja inferior
     val sheetState = rememberModalBottomSheetState()
 
-    // Estado para los inputs
-    var amountInput by remember { mutableStateOf("") }
+    // Estados para los inputs: Iniciamos con 50g por defecto
+    var amountInput by remember { mutableIntStateOf(50) }
     var selectedHour by remember { mutableIntStateOf(8) }
     var selectedMinute by remember { mutableIntStateOf(0) }
     var showTimePicker by remember { mutableStateOf(false) }
 
-    // Formatear hora para mostrarla en el botón
-    val timeLabel = String.format(Locale.getDefault(), "%02d:%02d %s",
+    // CRÍTICO: Usar Locale.US para que coincida exactamente con el ViewModel
+    val timeLabel = String.format(Locale.US, "%02d:%02d %s",
         if (selectedHour % 12 == 0) 12 else selectedHour % 12,
         selectedMinute,
         if (selectedHour < 12) "AM" else "PM"
@@ -61,7 +58,7 @@ fun AddScheduleSheet(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // SECCIÓN DE HORA (Visualmente atractiva)
+            // SECCIÓN DE HORA
             Text("¿A qué hora debe comer?", style = MaterialTheme.typography.labelLarge)
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -84,32 +81,37 @@ fun AddScheduleSheet(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // SECCIÓN DE RACIÓN
-            OutlinedTextField(
-                value = amountInput,
-                onValueChange = { if (it.length <= 4) amountInput = it },
-                label = { Text("Cantidad de alimento") },
-                suffix = { Text("gramos") },
-                leadingIcon = { Icon(Icons.Rounded.Scale, contentDescription = null) },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                shape = MaterialTheme.shapes.large,
+            // SECCIÓN DE RACIÓN DINÁMICA (NUEVO SLIDER)
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
+                shape = MaterialTheme.shapes.large,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Scale, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Ajustar Porción:", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Spacer(modifier = Modifier.weight(1f))
+                        Text("$amountInput g", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Slider(
+                        value = amountInput.toFloat(),
+                        onValueChange = { amountInput = it.toInt() },
+                        valueRange = 10f..150f,
+                        steps = 13
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // BOTONES DE ACCIÓN
+            // BOTÓN DE ACCIÓN
             Button(
-                onClick = {
-                    val amount = amountInput.toIntOrNull()
-                    if (amount != null && amount > 0) {
-                        onConfirm(timeLabel, amount)
-                    }
-                },
+                onClick = { onConfirm(timeLabel, amountInput) },
                 modifier = Modifier.fillMaxWidth().height(56.dp),
-                shape = MaterialTheme.shapes.large,
-                enabled = amountInput.isNotBlank()
+                shape = MaterialTheme.shapes.large
             ) {
                 Text("Guardar Programación", style = MaterialTheme.typography.titleMedium)
             }

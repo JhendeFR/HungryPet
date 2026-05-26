@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -31,10 +32,13 @@ import kotlinx.coroutines.launch
 fun HomeScreen(viewModel: MainViewModel) {
     val amount by viewModel.homeDispenseAmount.collectAsState()
     val stats by viewModel.dailyStats.collectAsState()
-    val scope = rememberCoroutineScope()
 
-    var isDispensingFeedback by remember { mutableStateOf(false) }
+    // CAPTURAMOS EL ESTADO REAL DEL DISPENSADOR DESDE FIREBASE
+    val isHardwareDispensing by viewModel.isHardwareDispensing.collectAsState()
+
+    val scope = rememberCoroutineScope()
     var isPressed by remember { mutableStateOf(false) }
+
     val buttonScale by animateFloatAsState(
         targetValue = if (isPressed) 0.88f else 1.0f,
         animationSpec = tween(durationMillis = 100), label = ""
@@ -88,61 +92,58 @@ fun HomeScreen(viewModel: MainViewModel) {
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 3. Botón Expresivo con Degradado Líquido Animado
+        // 3. Botón de Dispensación con Bloqueo y Degradado Adaptativo
+        val activeBrush = Brush.sweepGradient(
+            colors = listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary, MaterialTheme.colorScheme.primary)
+        )
+        val disabledBrush = Brush.sweepGradient(
+            colors = listOf(Color.Gray, Color.LightGray, Color.Gray)
+        )
+
         Box(
             modifier = Modifier
                 .size(170.dp)
-                .scale(buttonScale)
+                .scale(if (isHardwareDispensing) 1.0f else buttonScale)
                 .clip(CircleShape)
-                .background(
-                    Brush.sweepGradient(
-                        colors = listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary, MaterialTheme.colorScheme.primary)
-                    )
-                )
+                .background(if (isHardwareDispensing) disabledBrush else activeBrush)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
-                    indication = null
+                    indication = null,
+                    enabled = !isHardwareDispensing // BLOQUEO NATIVO DE INTERACCIÓN
                 ) {
-                    if (!isDispensingFeedback) {
-                        isPressed = true
-                        scope.launch {
-                            delay(100)
-                            isPressed = false
-                            isDispensingFeedback = true
-                            viewModel.dispenseFoodManual(amount) {
-                                scope.launch {
-                                    delay(2500) // Duración del texto de feedback
-                                    isDispensingFeedback = false
-                                }
-                            }
-                        }
+                    isPressed = true
+                    scope.launch {
+                        delay(100)
+                        isPressed = false
+                        viewModel.dispenseFoodManual(amount)
                     }
                 },
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
-                    imageVector = if (isDispensingFeedback) Icons.Rounded.TouchApp else Icons.Rounded.TouchApp,
+                    imageVector = Icons.Rounded.TouchApp,
                     contentDescription = null,
                     modifier = Modifier.size(44.dp),
-                    tint = MaterialTheme.colorScheme.onPrimary
+                    tint = if (isHardwareDispensing) Color.DarkGray else MaterialTheme.colorScheme.onPrimary
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = if (isDispensingFeedback) "¡Dispensando!" else "Presionar",
+                    text = if (isHardwareDispensing) "Sirviendo..." else "Presionar",
                     style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onPrimary,
+                    color = if (isHardwareDispensing) Color.DarkGray else MaterialTheme.colorScheme.onPrimary,
                     fontWeight = FontWeight.Bold
                 )
             }
         }
 
-        if (isDispensingFeedback) {
+        // Texto flotante de Feedback de red
+        if (isHardwareDispensing) {
             Text(
-                text = "Enviando comando al dispensador: Sirviendo ${amount}g...",
+                text = "Dispensador en marcha: Transmitiendo orden al ESP32 por $amount g...",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center
             )
         }
@@ -167,7 +168,8 @@ fun HomeScreen(viewModel: MainViewModel) {
                     value = amount.toFloat(),
                     onValueChange = { viewModel.setHomeDispenseAmount(it.toInt()) },
                     valueRange = 10f..150f,
-                    steps = 13
+                    steps = 13,
+                    enabled = !isHardwareDispensing // Bloqueamos también el slider durante el servicio
                 )
             }
         }

@@ -18,9 +18,12 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.usfx.hungrypet.data.FeedingLog
 import com.usfx.hungrypet.viewmodel.MainViewModel
+import java.text.SimpleDateFormat
+import java.util.*
 
 @Composable
 fun HistoryScreen(viewModel: MainViewModel) {
@@ -28,17 +31,83 @@ fun HistoryScreen(viewModel: MainViewModel) {
     var selectedPeriod by remember { mutableIntStateOf(0) } // 0 = Día, 1 = Semana, 2 = Mes
     val periods = listOf("Día", "Semana", "Mes")
 
-    // Filtrado de raciones y cálculo del total agregado
-    val filteredTotal = remember(logs, selectedPeriod) {
+    // --- PIPELINE DE PROCESAMIENTO DE DATOS EN TIEMPO REAL ---
+    val barValues = remember(logs, selectedPeriod) {
+        val sdfFull = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.US)
+        val calendarNow = Calendar.getInstance()
+        val todayStr = SimpleDateFormat("dd/MM/yyyy", Locale.US).format(calendarNow.time)
+
         when (selectedPeriod) {
-            0 -> logs.take(3).sumOf { it.cantidad }
-            1 -> logs.take(7).sumOf { it.cantidad }
-            else -> logs.sumOf { it.cantidad }
+            0 -> { // HOY: Agrupado por bloques horarios
+                val todayLogs = logs.filter { it.fechaHora.startsWith(todayStr) }
+                var manana = 0f
+                var tarde = 0f
+                var noche = 0f
+
+                todayLogs.forEach { log ->
+                    try {
+                        val date = sdfFull.parse(log.fechaHora)
+                        val logCal = Calendar.getInstance().apply { time = date ?: Date() }
+                        val hour = logCal.get(Calendar.HOUR_OF_DAY)
+                        when (hour) {
+                            in 6..11 -> manana += log.cantidad
+                            in 12..18 -> tarde += log.cantidad
+                            else -> noche += log.cantidad // Madrugada y noche profunda
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+                listOf(manana, tarde, noche)
+            }
+            1 -> { // SEMANA: Agrupado en bloques de 7 días
+                var estaSemana = 0f
+                var semanaPasada = 0f
+                var dosSemanasPasadas = 0f
+
+                logs.forEach { log ->
+                    try {
+                        val logDate = sdfFull.parse(log.fechaHora) ?: return@forEach
+                        val diffMillis = calendarNow.timeInMillis - logDate.time
+                        val diffDays = diffMillis / (1000 * 60 * 60 * 24)
+                        when (diffDays) {
+                            in 0..7 -> estaSemana += log.cantidad
+                            in 8..14 -> semanaPasada += log.cantidad
+                            in 15..21 -> dosSemanasPasadas += log.cantidad
+                        }
+                    } catch (e: Exception) { }
+                }
+                listOf(dosSemanasPasadas, semanaPasada, estaSemana)
+            }
+            else -> { // MES: Agrupado por meses del año
+                var esteMes = 0f
+                var mesPasado = 0f
+                var dosMesesPasados = 0f
+                val currentMonth = calendarNow.get(Calendar.MONTH)
+                val currentYear = calendarNow.get(Calendar.YEAR)
+
+                logs.forEach { log ->
+                    try {
+                        val logDate = sdfFull.parse(log.fechaHora) ?: return@forEach
+                        val logCal = Calendar.getInstance().apply { time = logDate }
+                        val monthDiff = (currentYear - logCal.get(Calendar.YEAR)) * 12 +
+                                (currentMonth - logCal.get(Calendar.MONTH))
+                        when (monthDiff) {
+                            0 -> esteMes += log.cantidad
+                            1 -> mesPasado += log.cantidad
+                            2 -> dosMesesPasados += log.cantidad
+                        }
+                    } catch (e: Exception) { }
+                }
+                listOf(dosMesesPasados, mesPasado, esteMes)
+            }
         }
     }
 
+    // El consumo total de la tarjeta superior ahora es la suma real de las barras visualizadas
+    val filteredTotal = remember(barValues) { barValues.sum().toInt() }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        // Selector de periodos
         TabRow(selectedTabIndex = selectedPeriod) {
             periods.forEachIndexed { index, title ->
                 Tab(
@@ -53,7 +122,6 @@ fun HistoryScreen(viewModel: MainViewModel) {
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Panel de Gráfico de Barras Integrado
             item {
                 ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -64,40 +132,60 @@ fun HistoryScreen(viewModel: MainViewModel) {
                             Spacer(modifier = Modifier.weight(1f))
                             Text("${filteredTotal}g", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                         }
-                        Spacer(modifier = Modifier.height(20.dp))
 
-                        // Renderizado del Canvas para barras dinámicas
+                        Spacer(modifier = Modifier.height(24.dp))
+
                         val barColor = MaterialTheme.colorScheme.primary
                         val trackColor = MaterialTheme.colorScheme.surfaceVariant
+
                         Canvas(modifier = Modifier.fillMaxWidth().height(120.dp)) {
                             val barWidth = 45.dp.toPx()
-                            val spacing = (size.width - (barWidth * 3)) / 4
-                            val maxAmount = 150f
+                            val sectionWidth = size.width / 3
 
-                            val heights = when(selectedPeriod) {
-                                0 -> listOf(50f, 30f, 40f)
-                                1 -> listOf(110f, 95f, 130f)
-                                else -> listOf(140f, 120f, 150f)
-                            }
+                            // Determinamos un máximo dinámico para que las barras escalen bien y no se salgan del Canvas
+                            val maxAmount = (barValues.maxOrNull() ?: 150f).coerceAtLeast(150f)
 
-                            heights.forEachIndexed { i, h ->
-                                val xOffset = spacing + i * (barWidth + spacing)
-                                val normalizedHeight = (h / maxAmount) * size.height
+                            barValues.forEachIndexed { i, value ->
+                                val xOffset = (sectionWidth * i) + (sectionWidth / 2) - (barWidth / 2)
+                                val normalizedHeight = (value / maxAmount) * size.height
                                 val yOffset = size.height - normalizedHeight
 
-                                // Carril de fondo de la barra
+                                // Fondo de carril
                                 drawRoundRect(
                                     color = trackColor,
                                     topLeft = Offset(xOffset, 0f),
                                     size = Size(barWidth, size.height),
                                     cornerRadius = CornerRadius(12f, 12f)
                                 )
-                                // Barra de datos sólida
-                                drawRoundRect(
-                                    color = barColor,
-                                    topLeft = Offset(xOffset, yOffset),
-                                    size = Size(barWidth, normalizedHeight),
-                                    cornerRadius = CornerRadius(12f, 12f)
+                                // Barra con cantidad real de Room
+                                if (normalizedHeight > 0) {
+                                    drawRoundRect(
+                                        color = barColor,
+                                        topLeft = Offset(xOffset, yOffset),
+                                        size = Size(barWidth, normalizedHeight),
+                                        cornerRadius = CornerRadius(12f, 12f)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Etiquetas del Eje X
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            val labels = when(selectedPeriod) {
+                                0 -> listOf("Mañana", "Tarde", "Noche")
+                                1 -> listOf("Sem -2", "Sem -1", "Esta Sem")
+                                else -> listOf("Mes -2", "Mes -1", "Este Mes")
+                            }
+
+                            labels.forEach { label ->
+                                Text(
+                                    text = label,
+                                    modifier = Modifier.weight(1f),
+                                    textAlign = TextAlign.Center,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -109,13 +197,11 @@ fun HistoryScreen(viewModel: MainViewModel) {
                 Text("Desglose del Historial", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             }
 
-            // Listado de Tarjetas optimizado para Alta Definición en Modo Oscuro
             items(logs) { log ->
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(
-                        // surfaceContainerHigh asegura separación visual perfecta sobre fondo oscuro
                         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
                     )
                 ) {

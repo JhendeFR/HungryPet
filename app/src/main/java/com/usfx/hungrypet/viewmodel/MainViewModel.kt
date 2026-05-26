@@ -28,9 +28,18 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import com.google.firebase.database.FirebaseDatabase
+
+data class ScheduleItem(
+    val id: UUID = UUID.randomUUID(),
+    val time: String,
+    val amount: Int,
+    var isActive: Boolean
+)
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val dao = AppDatabase.getDatabase(application).feedingLogDao()
@@ -73,6 +82,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _aiDispenseAmount = MutableStateFlow(40)
     val aiDispenseAmount: StateFlow<Int> = _aiDispenseAmount.asStateFlow()
 
+    private val _isHardwareDispensing = MutableStateFlow(false)
+    val isHardwareDispensing: StateFlow<Boolean> = _isHardwareDispensing.asStateFlow()
+
     private var firebaseJob: Job? = null
     private var lastFeededTime: Long = 0
 
@@ -81,24 +93,88 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ImageLabelerOptions.Builder().setConfidenceThreshold(0.60f).build()
     )
 
+    // --- AGREGAR VARIABLES DE HORARIO ---
+    private val _schedules = MutableStateFlow<List<ScheduleItem>>(emptyList())
+    val schedules: StateFlow<List<ScheduleItem>> = _schedules.asStateFlow()
+    private var lastTriggeredTime: String = ""
+
+    init {
+        startScheduleChecker() // Inicia el reloj apenas abres la app
+
+        // Escuchar el estado físico del dispensador en tiempo real
+        FirebaseDatabase.getInstance().getReference("dispensador/activar")
+            .addValueEventListener(object : com.google.firebase.database.ValueEventListener {
+                override fun onDataChange(snapshot: com.google.firebase.database.DataSnapshot) {
+                    val gramosActuales = snapshot.getValue(Int::class.java) ?: 0
+                    // Si es mayor a 0, significa que el ESP32 está operando los motores
+                    _isHardwareDispensing.value = gramosActuales > 0
+                }
+
+                override fun onCancelled(error: com.google.firebase.database.DatabaseError) {
+                    Log.e("Firebase_Feeder", "Error al escuchar estado del dispensador", error.toException())
+                }
+            })
+    }
+
+    // --- FUNCIONES PARA MANEJAR LA LISTA DESDE LA UI ---
+    fun addSchedule(time: String, amount: Int) {
+        _schedules.update { it + ScheduleItem(time = time, amount = amount, isActive = true) }
+    }
+
+    fun removeSchedule(item: ScheduleItem) {
+        _schedules.update { it.filterNot { schedule -> schedule.id == item.id } }
+    }
+
+    fun toggleScheduleActive(item: ScheduleItem, isActive: Boolean) {
+        _schedules.update { list ->
+            list.map { if (it.id == item.id) it.copy(isActive = isActive) else it }
+        }
+    }
+
+    // --- EL MOTOR DEL RELOJ ---
+    private fun startScheduleChecker() {
+        viewModelScope.launch {
+            while (true) {
+                // CRÍTICO: Usar Locale.US para asegurar que el formato sea "08:00 AM" sin puntos
+                val currentTime = SimpleDateFormat("hh:mm a", Locale.US).format(Date())
+
+                // Revisamos si alguna alarma coincide
+                _schedules.value.filter { it.isActive && it.time == currentTime }.forEach { schedule ->
+                    // Evitamos que dispense múltiples veces en el mismo minuto
+                    if (lastTriggeredTime != currentTime) {
+                        lastTriggeredTime = currentTime
+                        dispenseFoodScheduled(schedule.amount)
+                    }
+                }
+                delay(30000) // Revisamos el reloj cada 30 segundos
+            }
+        }
+    }
+
     fun setHomeDispenseAmount(amount: Int) { _homeDispenseAmount.value = amount }
     fun setAiDispenseAmount(amount: Int) { _aiDispenseAmount.value = amount }
 
     fun toggleEsp32Flash() {
         _isEsp32FlashOn.value = !_isEsp32FlashOn.value
-        // Aquí se llamaría a Retrofit para encender/apagar físicamente el pin GPIO4 del ESP32
-        // RetrofitClient.apiService.toggleFlash(_isEsp32FlashOn.value)
+
+        // Escribimos 1 (encendido) o 0 (apagado) en Firebase
+        val state = if (_isEsp32FlashOn.value) 1 else 0
+        com.google.firebase.database.FirebaseDatabase.getInstance()
+            .getReference("camara/flash")
+            .setValue(state)
     }
 
     // --- LÓGICA DE CONTROL FIREBASE/IA ---
 
     fun toggleCameraStream() {
         _isStreaming.value = !_isStreaming.value
+        updateCameraStateInFirebase()
         manageFirebaseListener()
     }
 
     fun toggleEsp32Ai() {
         _isEsp32AiActive.value = !_isEsp32AiActive.value
+        updateCameraStateInFirebase()
         manageFirebaseListener()
     }
 
@@ -187,34 +263,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun executeFeederAutomation(mascota: String) {
         val portion = _aiDispenseAmount.value
         viewModelScope.launch {
-            // RetrofitClient.apiService.dispenseFood(portion)
+            // Enviamos los gramos directamente a Firebase
+            val databaseRef = com.google.firebase.database.FirebaseDatabase.getInstance().getReference("dispensador/activar")
+
+            databaseRef.setValue(portion)
+                .addOnSuccessListener {
+                    println("HungryPetLog: IA dispensando ${portion}g a Firebase.")
+                }
+
             saveLog("Automático", mascota, portion)
             sendNotification("IA Automática", "Se identificó un $mascota. Dispensando ${portion}g.")
         }
     }
 
-    fun dispenseFoodManual(amount: Int, onComplete: () -> Unit) {
+    fun dispenseFoodManual(amount: Int) {
         viewModelScope.launch {
-            // 1. Obtenemos la referencia al nodo exacto que tu ESP32 está escuchando
+            // En lugar de enviar un 1, enviamos la cantidad exacta (amount)
             val databaseRef = com.google.firebase.database.FirebaseDatabase.getInstance().getReference("dispensador/activar")
 
-            // 2. Cambiamos el valor a 1 para activar el mecanismo físico
-            databaseRef.setValue(1)
+            databaseRef.setValue(amount)
                 .addOnSuccessListener {
-                    println("HungryPetLog: Comando enviado a Firebase con éxito.")
+                    println("HungryPetLog: Gramos ($amount g) enviados a Firebase.")
                 }
                 .addOnFailureListener { exception ->
                     println("HungryPetLog: Error al enviar comando: ${exception.message}")
                 }
 
-            // 3. Guardamos la ración en la base de datos local (RoomDB)
             saveLog("Manual", "N/A", amount)
-
-            // 4. Disparamos la notificación push en el teléfono
-            sendNotification("Alimentación Manual", "Se han dispensado ${amount}g.")
-
-            // 5. Avisamos a la interfaz de usuario (HomeScreen) que ya terminamos para que quite el cartel de "Dispensando"
-            onComplete()
+            sendNotification("Alimentación Manual", "Dispensando ración de ${amount}g.")
         }
     }
 
@@ -246,5 +322,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
         notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+    }
+    private fun updateCameraStateInFirebase() {
+        // Si cualquiera de las dos funciones (Live o IA) está activa, encendemos la cámara (1). Si no, la apagamos (0).
+        val state = if (_isStreaming.value || _isEsp32AiActive.value) 1 else 0
+        com.google.firebase.database.FirebaseDatabase.getInstance()
+            .getReference("camara/encendida")
+            .setValue(state)
+    }
+    fun dispenseFoodScheduled(amount: Int) {
+        viewModelScope.launch {
+            val databaseRef = com.google.firebase.database.FirebaseDatabase.getInstance().getReference("dispensador/activar")
+
+            databaseRef.setValue(amount)
+                .addOnSuccessListener {
+                    println("HungryPetLog: Horario activado, dispensando ${amount}g.")
+                }
+
+            saveLog("Programado", "N/A", amount)
+            sendNotification("Alimentación Programada", "Es la hora. Se han dispensado ${amount}g.")
+        }
     }
 }

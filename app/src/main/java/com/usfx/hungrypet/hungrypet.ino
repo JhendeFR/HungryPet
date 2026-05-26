@@ -2,11 +2,11 @@
 #include <WiFi.h>
 #include <FirebaseESP32.h>
 #include "mbedtls/base64.h"
-#include <ESP32Servo.h> // Librería de servos para ESP32
+#include <ESP32Servo.h>
 
 // ===== CONFIGURA TU WIFI =====
-const char* ssid = "SI QUIERES WIFI ROBA";
-const char* password = "Pisoooo2";
+const char* ssid = "WiFi_para_Negros";
+const char* password = "Oso12802322";
 
 // ===== CONFIGURA TU FIREBASE =====
 #define DATABASE_URL "esp32-b8c7c-default-rtdb.firebaseio.com"
@@ -15,12 +15,11 @@ FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig configFirebase;
 
-// ===== PINES PARA SERVOMOTORES =====
-#define SERVO_1_PIN 14
-#define SERVO_2_PIN 13
+// ===== PIN PARA EL SERVOMOTOR (Solo usamos 1) =====
+#define SERVO_PIN 14
+#define LED_GPIO_NUM 4 // Flash LED
 
-Servo servo1;
-Servo servo2;
+Servo miServo;
 
 // ===== Pines para ESP32-CAM AI Thinker (OV2640) =====
 #define PWDN_GPIO_NUM     32
@@ -39,13 +38,16 @@ Servo servo2;
 #define VSYNC_GPIO_NUM    25
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
-#define LED_GPIO_NUM       4
 
 void setup() {
     Serial.begin(115200);
     Serial.println();
 
-    // 1. INICIALIZAR CÁMARA (Hacerlo primero para evitar conflictos de timers)
+    // 0. INICIALIZAR FLASH APAGADO
+    pinMode(LED_GPIO_NUM, OUTPUT);
+    digitalWrite(LED_GPIO_NUM, LOW);
+
+    // 1. INICIALIZAR CÁMARA
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer   = LEDC_TIMER_0;
@@ -80,21 +82,13 @@ void setup() {
     s->set_vflip(s, 1);
     s->set_hmirror(s, 1);
 
-    // 2. INICIALIZAR SERVOMOTORES
-    // Asignamos timers específicos para que no choquen con la cámara
+    // 2. INICIALIZAR EL ÚNICO SERVOMOTOR
     ESP32PWM::allocateTimer(1);
-    ESP32PWM::allocateTimer(2);
+    miServo.setPeriodHertz(50);
+    miServo.attach(SERVO_PIN, 500, 2400);
 
-    servo1.setPeriodHertz(50); // Frecuencia estándar para servos
-    servo2.setPeriodHertz(50);
-
-    servo1.attach(SERVO_1_PIN, 500, 2400);
-    servo2.attach(SERVO_2_PIN, 500, 2400);
-
-    // Mover a posición inicial (0 grados)
-    Serial.println("Posicionando servos en 0 grados...");
-    servo1.write(0);
-    servo2.write(0);
+    Serial.println("Posicionando compuerta en 0 grados...");
+    miServo.write(0);
     delay(500);
 
     // 3. CONECTAR A WIFI
@@ -113,74 +107,98 @@ void setup() {
 
     Firebase.begin(&configFirebase, &auth);
     Firebase.reconnectWiFi(true);
-    Serial.println("Conectado con Firebase Realtime Database.");
 
-    // Asegurarnos de que el nodo de disparo inicie en 0
     Firebase.setInt(fbdo, "/dispensador/activar", 0);
+    Firebase.setInt(fbdo, "/camara/flash", 0);
+    Firebase.setInt(fbdo, "/camara/encendida", 0);
 }
 
 void loop() {
     if (WiFi.status() == WL_CONNECTED) {
 
+        bool isDispensing = false;
+
         // ==========================================
-        // PARTE A: REVISAR COMANDOS DE DISPENSACIÓN
+        // PARTE A: DISPENSAR ALIMENTO
         // ==========================================
         if (Firebase.getInt(fbdo, "/dispensador/activar")) {
-            if (fbdo.intData() == 1) {
-                Serial.println("¡Comando recibido! Dispensando alimento...");
+            int gramos = fbdo.intData();
 
-                // Abrir compuertas (90 grados)
-                servo1.write(120);
-                delay(88);
-                servo2.write(120);
+            if (gramos > 0) {
+                isDispensing = true;
+                if (gramos > 150) gramos = 150;
 
-                delay(1500); // Tiempo que las compuertas se quedan abiertas
+                Serial.print("¡Comando recibido! Gramos: ");
+                Serial.println(gramos);
 
-                // Cerrar compuertas (0 grados)
-                servo1.write(0);
-                servo2.write(0);
+                unsigned long tiempoApertura = (gramos * 10000UL) / 150UL;
+                unsigned long inicio = millis();
 
-                // Reiniciar el comando en Firebase a 0
+                while (millis() - inicio < tiempoApertura) {
+                    // Oscilación suave para 1 solo servo
+                    for (int angulo = 90; angulo <= 92; angulo++) {
+                        miServo.write(angulo);
+                        delay(200);
+                        yield();
+                        if (millis() - inicio >= tiempoApertura) break;
+                    }
+                    if (millis() - inicio >= tiempoApertura) break;
+                    for (int angulo = 92; angulo >= 90; angulo--) {
+                        miServo.write(angulo);
+                        delay(200);
+                        yield();
+                        if (millis() - inicio >= tiempoApertura) break;
+                    }
+                }
+
+                // Cierre de compuerta
+                miServo.write(0);
+
                 Firebase.setInt(fbdo, "/dispensador/activar", 0);
-                Serial.println("Dispensación completada. Compuertas cerradas.");
+                Serial.println("Dispensación completada.");
+                delay(500);
             }
         }
 
         // ==========================================
-        // PARTE B: CAPTURAR Y ENVIAR IMAGEN
+        // PARTE B: CÁMARA ON-DEMAND
         // ==========================================
-        camera_fb_t * fb = esp_camera_fb_get();
-        if (!fb) {
-            Serial.println("Error al capturar el frame");
-            delay(1000);
-            return;
-        }
+        if (!isDispensing) {
+            if (Firebase.getInt(fbdo, "/camara/encendida")) {
+                if (fbdo.intData() == 1) {
+                    camera_fb_t * fb = esp_camera_fb_get();
+                    if (!fb) { delay(500); return; }
 
-        size_t base64_len = 4 * ((fb->len + 2) / 3) + 1;
-        unsigned char* base64_buffer = (unsigned char*)ps_malloc(base64_len);
+                    size_t base64_len = 4 * ((fb->len + 2) / 3) + 1;
+                    unsigned char* base64_buffer = (unsigned char*)ps_malloc(base64_len);
 
-        if (base64_buffer) {
-            size_t output_len = 0;
-            int ret = mbedtls_base64_encode(base64_buffer, base64_len, &output_len, fb->buf, fb->len);
-
-            if (ret == 0) {
-                base64_buffer[output_len] = '\0';
-                String base64_str = String((char*)base64_buffer);
-
-                // Subir a Firebase
-                if (Firebase.setString(fbdo, "/camara/stream", base64_str)) {
-                    // Oculté este print para que la consola no se sature, pero funciona igual
-                    // Serial.println("Frame transmitido.");
+                    if (base64_buffer) {
+                        size_t output_len = 0;
+                        int ret = mbedtls_base64_encode(base64_buffer, base64_len, &output_len, fb->buf, fb->len);
+                        if (ret == 0) {
+                            base64_buffer[output_len] = '\0';
+                            String base64_str = String((char*)base64_buffer);
+                            Firebase.setString(fbdo, "/camara/stream", base64_str);
+                        }
+                        free(base64_buffer);
+                    }
+                    esp_camera_fb_return(fb);
                 } else {
-                    Serial.print("Error al subir a Firebase: ");
-                    Serial.println(fbdo.errorReason());
+                    Firebase.setString(fbdo, "/camara/stream", "");
                 }
             }
-            free(base64_buffer);
         }
-        esp_camera_fb_return(fb);
-    }
 
-    // El delay general del ciclo
-    delay(1500);
+        // ==========================================
+        // PARTE C: CONTROL DE FLASH LED
+        // ==========================================
+        if (Firebase.getInt(fbdo, "/camara/flash")) {
+            if (fbdo.intData() == 1) {
+                digitalWrite(LED_GPIO_NUM, HIGH);
+            } else {
+                digitalWrite(LED_GPIO_NUM, LOW);
+            }
+        }
+    }
+    delay(1000);
 }

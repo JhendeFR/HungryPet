@@ -136,7 +136,7 @@ fun HungryPetApp(viewModel: MainViewModel) {
         ) { paddingValues ->
             NavHost(navController, startDestination = "home", Modifier.padding(paddingValues)) {
                 composable("home") { HomeScreen(viewModel) }
-                composable("schedule") { ScheduleScreen() }
+                composable("schedule") { ScheduleScreen(viewModel) }
                 composable("history") { HistoryScreen(viewModel) }
                 composable("ai_cam") { AiCamScreen(viewModel) }
                 composable("labs") { LabsScreen(viewModel) }
